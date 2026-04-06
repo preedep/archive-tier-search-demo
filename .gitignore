@@ -13,6 +13,17 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
+# macOS metadata
+.DS_Store
+
+# Generated data files
+data/
+
+# Benchmark reports (machine-specific timing — regenerate with ./run_benchmark.sh)
+# To keep a specific result: git add -f reports/benchmark_YYYYMMDD_HHMMSS.txt
+reports/
+.claude/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
