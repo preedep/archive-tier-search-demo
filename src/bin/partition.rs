@@ -25,9 +25,14 @@ use rusqlite::{params, Connection};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-/// Number of hash buckets. With 200 accounts → ~12-13 accounts/bucket.
-/// Increase for more realistic partition granularity.
+/// Number of hash buckets.
 const NUM_BUCKETS: u64 = 16;
+
+/// Max rows per parquet file. When a partition exceeds this, it is split into
+/// part-00001.parquet, part-00002.parquet, …
+/// At 10M rows: O2 partition ≈ 52,000 rows → ceil(52000/20000) = 3 files
+///              O1 partition ≈  1,700 rows → 1 file (fine-grained enough)
+const MAX_ROWS_PER_FILE: usize = 20_000;
 
 const CSV_PATH: &str = "data/account_transaction.csv";
 const DB_PATH: &str = "data/archive_metadata.db";
@@ -278,17 +283,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             BASE_O1, month, bdate, bucket
         );
         fs::create_dir_all(&dir)?;
-        let file_path = format!("{}/part-00001.parquet", dir);
 
-        write_parquet(&file_path, &rows, indices)?;
-
-        stmt_o1.execute(params![
-            month,
-            bdate,
-            *bucket as i64,
-            file_path,
-            indices.len() as i64
-        ])?;
+        for (file_idx, chunk) in indices.chunks(MAX_ROWS_PER_FILE).enumerate() {
+            let file_path = format!("{}/part-{:05}.parquet", dir, file_idx + 1);
+            write_parquet(&file_path, &rows, chunk)?;
+            stmt_o1.execute(params![
+                month,
+                bdate,
+                *bucket as i64,
+                file_path,
+                chunk.len() as i64
+            ])?;
+        }
 
         done_o1 += 1;
         if done_o1 % 1000 == 0 || done_o1 == total_o1 {
@@ -336,32 +342,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             BASE_O2, month, bucket
         );
         fs::create_dir_all(&dir)?;
-        let file_path = format!("{}/part-00001.parquet", dir);
 
-        // min / max business_date inside this file (for date-range pruning)
-        let min_bdate = indices
-            .iter()
-            .map(|&i| rows[i].drun.as_str())
-            .min()
-            .unwrap_or("")
-            .to_string();
-        let max_bdate = indices
-            .iter()
-            .map(|&i| rows[i].drun.as_str())
-            .max()
-            .unwrap_or("")
-            .to_string();
+        for (file_idx, chunk) in indices.chunks(MAX_ROWS_PER_FILE).enumerate() {
+            let file_path = format!("{}/part-{:05}.parquet", dir, file_idx + 1);
 
-        write_parquet(&file_path, &rows, indices)?;
+            // min / max business_date inside this chunk (for date-range pruning)
+            let min_bdate = chunk
+                .iter()
+                .map(|&i| rows[i].drun.as_str())
+                .min()
+                .unwrap_or("")
+                .to_string();
+            let max_bdate = chunk
+                .iter()
+                .map(|&i| rows[i].drun.as_str())
+                .max()
+                .unwrap_or("")
+                .to_string();
 
-        stmt_o2.execute(params![
-            month,
-            *bucket as i64,
-            file_path,
-            min_bdate,
-            max_bdate,
-            indices.len() as i64
-        ])?;
+            write_parquet(&file_path, &rows, chunk)?;
+
+            stmt_o2.execute(params![
+                month,
+                *bucket as i64,
+                file_path,
+                min_bdate,
+                max_bdate,
+                chunk.len() as i64
+            ])?;
+        }
 
         done_o2 += 1;
         if done_o2 % 50 == 0 || done_o2 == total_o2 {

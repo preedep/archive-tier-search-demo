@@ -25,8 +25,8 @@ const N_ITERS: usize = 7;
 
 // Accounts from generate.rs formula: BBB + T + SSSSSSS
 // branch=(i/40)+1, type=1 if even else 2, seq=(i%40)+1
-const ACCT_A: &str = "00110000001"; // i=0  → branch 1, savings, seq 1
-const ACCT_B: &str = "00320000010"; // i=89 → branch 3, current, seq 10
+const ACCT_A: &str = "00000000001"; // sequential account #1
+const ACCT_B: &str = "00000100001"; // sequential account #100,001
 
 // ── ANSI palette ───────────────────────────────────────────────────────────
 
@@ -134,13 +134,15 @@ fn o1_files(conn: &Connection, iacct: &str, d_start: &str, d_end: &str) -> (Vec<
         let month = d.format("%Y-%m").to_string();
         let date_s = d.format("%Y-%m-%d").to_string();
         calls += 1;
-        if let Ok(uri) = conn.query_row(
+        let mut stmt = conn.prepare_cached(
             "SELECT object_uri FROM archive_file_index_o1
              WHERE statement_month=?1 AND business_date=?2
                AND account_bucket=?3 AND is_active=1",
-            params![month, date_s, bucket],
-            |row| row.get::<_, String>(0),
-        ) {
+        ).unwrap();
+        let uris = stmt.query_map(params![month, date_s, bucket], |row| {
+            row.get::<_, String>(0)
+        }).unwrap();
+        for uri in uris.flatten() {
             files.push(uri);
         }
         d += CDur::days(1);
@@ -168,13 +170,15 @@ fn o2_files(conn: &Connection, iacct: &str, d_start: &str, d_end: &str) -> (Vec<
     let mut calls = 0usize;
     for month in &months {
         calls += 1;
-        if let Ok(uri) = conn.query_row(
+        let mut stmt = conn.prepare_cached(
             "SELECT object_uri FROM archive_file_index_o2
              WHERE statement_month=?1 AND account_bucket=?2 AND is_active=1
                AND min_business_date<=?3 AND max_business_date>=?4",
-            params![month, bucket, d_end, d_start],
-            |row| row.get::<_, String>(0),
-        ) {
+        ).unwrap();
+        let uris = stmt.query_map(params![month, bucket, d_end, d_start], |row| {
+            row.get::<_, String>(0)
+        }).unwrap();
+        for uri in uris.flatten() {
             files.push(uri);
         }
     }
@@ -469,6 +473,24 @@ fn print_summary(scenarios: &[Scenario], results: &[(Summary, Summary)]) {
 
 // ── Full-scan helpers ──────────────────────────────────────────────────────
 
+/// List all *.parquet files inside `dir`, sorted by name. Returns empty vec if dir missing.
+fn list_parquet_in_dir(dir: &str) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut parts: Vec<String> = rd
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("parquet") {
+                p.to_str().map(|s| s.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+    parts.sort();
+    parts
+}
+
 /// Enumerate ALL parquet files in the date range for O1 (all buckets per day).
 /// Simulates Hive-path discovery without account-bucket knowledge.
 fn full_scan_files_o1(d_start: &str, d_end: &str) -> Vec<String> {
@@ -480,10 +502,10 @@ fn full_scan_files_o1(d_start: &str, d_end: &str) -> Vec<String> {
         let month  = d.format("%Y-%m").to_string();
         let date_s = d.format("%Y-%m-%d").to_string();
         for b in 0..NUM_BUCKETS {
-            let p = format!(
-                "data/statements_o1/statement_month={month}/business_date={date_s}/account_bucket={b}/part-00001.parquet"
+            let dir = format!(
+                "data/statements_o1/statement_month={month}/business_date={date_s}/account_bucket={b}"
             );
-            if std::path::Path::new(&p).exists() { files.push(p); }
+            files.extend(list_parquet_in_dir(&dir));
         }
         d += CDur::days(1);
     }
@@ -504,10 +526,10 @@ fn full_scan_files_o2(d_start: &str, d_end: &str) -> Vec<String> {
     let mut files = Vec::new();
     for month in &months {
         for b in 0..NUM_BUCKETS {
-            let p = format!(
-                "data/statements_o2/statement_month={month}/account_bucket={b}/part-00001.parquet"
+            let dir = format!(
+                "data/statements_o2/statement_month={month}/account_bucket={b}"
             );
-            if std::path::Path::new(&p).exists() { files.push(p); }
+            files.extend(list_parquet_in_dir(&dir));
         }
     }
     files

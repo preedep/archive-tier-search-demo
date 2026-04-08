@@ -10,22 +10,17 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::time::Instant;
 
-const TOTAL_ROWS: usize = 1_000_000;
-const NUM_ACCOUNTS: usize = 200;
+const TOTAL_ROWS: usize = 10_000_000;
+const NUM_ACCOUNTS: usize = 500_000;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut rng = StdRng::from_entropy();
 
-    // Generate 200 account numbers (11-digit: BBB + T + SSSSSSS)
-    // BBB = branch (001-005), T = account type (1=savings, 2=current), SSSSSSS = sequence
+    // Generate account numbers (11-digit, zero-padded sequential)
+    // Format: 00000000001 – 00000500000  always fits VARCHAR(11)
     let accounts: Vec<String> = (0..NUM_ACCOUNTS)
-        .map(|i| {
-            let branch = (i / 40) + 1;
-            let account_type = if i % 2 == 0 { 1 } else { 2 };
-            let seq = (i % 40) + 1;
-            format!("{:03}{}{:07}", branch, account_type, seq)
-        })
+        .map(|i| format!("{:011}", i + 1))
         .collect();
 
     // Date range: 2025-01-01 to 2025-12-31
@@ -36,7 +31,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Lookup tables
     let mnemos = ["DEP", "WDR", "TRF", "FEE", "INT", "PAY", "CHG", "REF"];
     let channels = ["ATM ", "MOB ", "WEB ", "BRN ", "API ", "IVR "];
-    let branches = ["0001", "0002", "0003", "0004", "0005", "0100", "0200", "0300"];
+    let branches = [
+        "0001", "0002", "0003", "0004", "0005", "0100", "0200", "0300",
+    ];
     let descriptions = [
         "DEPOSIT",
         "WITHDRAWAL",
@@ -85,7 +82,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for day_idx in 0..total_days {
         let drun = start_date + Duration::days(day_idx);
-        let day_rows = rows_per_day + if (day_idx as usize) < extra_rows { 1 } else { 0 };
+        let day_rows = rows_per_day
+            + if (day_idx as usize) < extra_rows {
+                1
+            } else {
+                0
+            };
 
         // Track cseq per account for this drun
         let mut seq_map: HashMap<usize, i32> = HashMap::with_capacity(NUM_ACCOUNTS);
